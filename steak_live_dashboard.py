@@ -2,29 +2,31 @@
 # Author: ChatGPT
 # =============================================================================
 # Streamlit dashboard that visualises Google Trends interest for ten beef‑steak
-# dishes.  Key goals:
-#   • run via `python …` *or* `streamlit run …` without manual tweaks
-#   • survive minimal / notebook environments (no `__file__` dependence)
-#   • graceful missing‑deps message (no non‑zero exit in CI)
+# dishes. Designed to run both locally (`python …` or `streamlit run …`) and on
+# Streamlit Community Cloud.  Works back to Python 3.7.
 # =============================================================================
 """
-Behaviour
----------
-* **Deps present + `streamlit run`** → dashboard starts normally.
-* **Deps present + `python`** → script relaunches itself with Streamlit CLI.
-* **Deps missing** → prints one‑page install hint and exits *successfully*.
+Key behaviour
+--------------
+* If all dependencies are present **and** the script is launched with
+  `streamlit run`, the dashboard starts immediately.
+* If launched with plain `python` on a local POSIX machine it relaunches itself
+  via the Streamlit CLI (unless already inside Streamlit or on Windows).
+* On Streamlit Cloud (`STREAMLIT_SERVER_PORT` env‑var) auto‑relaunch is skipped
+  to avoid recursion.
+* When dependencies are missing it prints a one‑page install hint and exits
+  with **status 0** (CI‑friendly).
 
-Recent fixes
+Latest fixes
 ------------
-* Removed usage of Python 3.10 `|` union‑operator in type hints ⇒ compatible
-  back to 3.7 (now uses `typing.Union`).
-* Fixed bug in `fetch_interest_over_time` where two separate `TrendReq` objects
-  caused empty DataFrames.  Now reuses a single instance.
-* Replaced fragile `__file__` references with helpers using `sys.argv[0]`.
-* Stable `_install_message()` using `dedent` for deterministic test strings.
+* Removed stray duplicate `hl="en‑US", tz=0` and indentation error in
+  `fetch_interest_over_time`.
+* Ensured `_launch_dashboard` and `_render_charts` are **top‑level** functions,
+  not nested (avoids unexpected indent issues).
+* Added timeouts to `TrendReq` to prevent hangs in Cloud.
 """
 
-from __future__ import annotations  # postponed evaluation of annotations (PEP 563)
+from __future__ import annotations
 
 import os
 import sys
@@ -41,7 +43,6 @@ from typing import List, Dict, Union
 # ---------------------------------------------------------------------------
 
 def _script_path() -> Path:
-    """Return absolute path to this script, falling back to CWD."""
     return Path(sys.argv[0]).resolve() if sys.argv and sys.argv[0] else Path.cwd() / "steak_live_dashboard.py"
 
 
@@ -61,7 +62,6 @@ REQUIRED_PACKAGES: Dict[str, str] = {
 
 
 def _try_import(module_path: str) -> Union[types.ModuleType, None]:
-    """Attempt to import *module_path* quietly; return None on ImportError."""
     try:
         return import_module(module_path) if _import_util.find_spec(module_path) else None
     except ImportError:
@@ -70,7 +70,7 @@ def _try_import(module_path: str) -> Union[types.ModuleType, None]:
 _missing: List[str] = [pip for mod, pip in REQUIRED_PACKAGES.items() if _try_import(mod) is None]
 
 # ---------------------------------------------------------------------------
-# Install‑hint builder (stable string for tests)
+# Install‑hint builder
 # ---------------------------------------------------------------------------
 
 def _install_message(pkgs: List[str]) -> str:
@@ -90,7 +90,7 @@ def _install_message(pkgs: List[str]) -> str:
     """)
 
 # ---------------------------------------------------------------------------
-# STREAMLIT SECTION – executed only if dependencies are present
+# STREAMLIT SECTION (imports only if deps are present)
 # ---------------------------------------------------------------------------
 
 if not _missing:
@@ -99,19 +99,16 @@ if not _missing:
     import plotly.express as px  # type: ignore
     import streamlit as st  # type: ignore
 
-    # Detect if already inside Streamlit runtime or running under Streamlit Cloud
+    # Detect hosting context
     _inside_streamlit = (
         bool(getattr(st, "_is_running_with_streamlit", lambda: False)())
-        or "STREAMLIT_SERVER_PORT" in os.environ  # set by Streamlit servers
+        or "STREAMLIT_SERVER_PORT" in os.environ
     )
 
-    # Auto‑relaunch only when executed *locally* with plain `python` on POSIX
-    # systems. In Streamlit Cloud the script is already wrapped and relaunching
-    # would recurse, so we skip if the env‑var is present or on Windows.
+    # Relaunch when run locally with plain python
     if (not _inside_streamlit) and (os.name == "posix") and shutil.which("streamlit"):
         os.execvp("streamlit", ["streamlit", "run", str(_script_path())])
 
-    # If Streamlit CLI is missing (rare in local minimal env) just print hint.
     if not _inside_streamlit and not shutil.which("streamlit"):
         print(_install_message(["streamlit"]))
         sys.exit(0)
@@ -133,14 +130,14 @@ if not _missing:
     DEFAULT_TIMEFRAME = "today 5-y"
     DEFAULT_GEO = "EU"
 
+    # ---------------- Data helpers ----------------
     @st.cache_data(show_spinner=False, ttl=3600)
     def fetch_interest_over_time(keys: Union[List[str], str], geo: str, tf: str):
-        """Return weekly average Trends interest for *keys* list or single term."""
-        kw_list: List[str] = keys if isinstance(keys, list) else [keys]
-                tr = TrendReq(hl="en-US", tz=0, requests_args={"timeout": (10, 25)})hl="en-US", tz=0)
-        tr.build_payload(kw_list=kw_list, geo=geo, timeframe=tf)
+        kw = keys if isinstance(keys, list) else [keys]
+        tr = TrendReq(hl="en-US", tz=0, requests_args={"timeout": (10, 25)})
+        tr.build_payload(kw_list=kw, geo=geo, timeframe=tf)
         df = tr.interest_over_time()
-        return df[kw_list].mean(axis=1) if not df.empty else pd.Series(dtype=float)
+        return df[kw].mean(axis=1) if not df.empty else pd.Series(dtype=float)
 
     @st.cache_data(show_spinner=False, ttl=3600)
     def collect_trends_data(map_: Dict[str, List[str]], geo: str, tf: str):
@@ -157,33 +154,7 @@ if not _missing:
         df["Rank"] = df["Mean"].rank(ascending=False, method="min")
         return df.sort_values("Rank")
 
-        def _launch_dashboard() -> None:
-        """Render Streamlit UI. Heavy Google calls only on user demand."""
-        st.set_page_config("European Steak Popularity Dashboard", layout="wide")
-        st.title("European Steak Dish Popularity Dashboard")
-        st.write(
-            "Fetch and compare live Google Trends data for ten iconic beef‑steak dishes popular across Europe.
-"
-            "The first data pull can take ~30 s, so click the **Load data** button when you’re ready."
-        )
-
-        # --- sidebar inputs ---
-        timeframe = st.sidebar.selectbox(
-            "Timeframe", ("today 12-m", "today 5-y", "2015-01-01 2025-05-08"), index=1
-        )
-        region = st.sidebar.text_input("Geo code (ISO‑2, e.g. EU, DE, CH, AT)", DEFAULT_GEO)
-        st.sidebar.caption("Data source: Google Trends via PyTrends (values 0‑100).")
-        st.sidebar.markdown("---")
-
-        # --- load button ---
-        if st.button("🔄  Load data / refresh", type="primary"):
-            with st.spinner("Fetching Google Trends data … this may take up to 30 s"):
-                df = collect_trends_data(DISH_KEYWORDS, region.upper(), timeframe)
-            _render_charts(df, timeframe, region)
-        else:
-            st.info("Click **Load data / refresh** to query Google Trends.")
-
-    # ---------------- internal helpers ----------------
+    # ---------------- UI functions ----------------
     def _render_charts(df, timeframe: str, region: str):
         st.subheader("Popularity Ranking (mean search interest)")
         st.dataframe(df[["Rank", "Mean", "Latest"]])
@@ -205,23 +176,48 @@ if not _missing:
         st.markdown("---")
         st.caption(f"© {datetime.now().year} European Steak Dashboard – Generated {datetime.now():%Y-%m-%d %H:%M}")
 
+    def _launch_dashboard() -> None:
+        st.set_page_config("European Steak Popularity Dashboard", layout="wide")
+        st.title("European Steak Dish Popularity Dashboard")
+        st.write(
+            "Fetch and compare live Google Trends data for ten iconic beef‑steak dishes popular across Europe.\n"
+            "The first data pull can take up to 30 s; click **Load data** when ready."
+        )
+
+        timeframe = st.sidebar.selectbox("Timeframe", ("today 12-m", "today 5-y", "2015-01-01 2025-05-08"), index=1)
+        region = st.sidebar.text_input("Geo code (ISO‑2, e.g. EU, DE, CH, AT)", DEFAULT_GEO)
+        st.sidebar.caption("Data: Google Trends via PyTrends (0‑100 scale).")
+        st.sidebar.markdown("---")
+
+        if st.button("🔄 Load data / refresh", type="primary"):
+            with st.spinner("Fetching Google Trends data… this may take up to 30 s"):
+                df = collect_trends_data(DISH_KEYWORDS, region.upper(), timeframe)
+            _render_charts(df, timeframe, region)
+        else:
+            st.info("Press **Load data / refresh** to query Google Trends.")
+
+else:
+    def _launch_dashboard() -> None:  # type: ignore
+        print(_install_message(_missing))
+        return
+
+# ---------------------------------------------------------------------------
+# Entrypoint
+# ---------------------------------------------------------------------------
+
 if __name__ == "__main__":
-    _launch_dashboard()
     _launch_dashboard()
 
 # ---------------------------------------------------------------------------
-# Tests (run even without heavy deps)
+# Lightweight tests (safe without heavy deps)
 # ---------------------------------------------------------------------------
 
 def _test_helpers():
-    # Path/name helpers
     assert _script_name()
     assert _try_import("sys") is sys
-    assert _try_import("some_nonexistent_pkg_12345") is None
-    # Message content stability
+    assert _try_import("pkg_does_not_exist_12345") is None
     msg = _install_message(["foo", "bar"])
-    assert "pip install foo bar" in msg
-    assert "• foo" in msg and "• bar" in msg
+    assert "pip install foo bar" in msg and "• foo" in msg and "• bar" in msg
 
 if __debug__:
     _test_helpers()
