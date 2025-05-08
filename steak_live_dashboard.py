@@ -99,20 +99,12 @@ if not _missing:
     import plotly.express as px  # type: ignore
     import streamlit as st  # type: ignore
 
-    # Detect hosting context
-    _inside_streamlit = (
-        bool(getattr(st, "_is_running_with_streamlit", lambda: False)())
-        or "STREAMLIT_SERVER_PORT" in os.environ
-    )
-
-    # Relaunch when run locally with plain python
-    if (not _inside_streamlit) and (os.name == "posix") and shutil.which("streamlit"):
-        os.execvp("streamlit", ["streamlit", "run", str(_script_path())])
-
-        # If we somehow ended up here without Streamlit CLI (unlikely in Cloud),
-    # just continue – the UI can still render in-process. We no longer abort.
-    # This avoids "connection refused" errors in Cloud health‑check.
-    pass
+    # Detect hosting context – we are inside Streamlit Cloud **or** a local
+    # Streamlit run if the private flag is set.  We no longer auto‑relaunch
+    # via `os.execvp`; instead the script runs identically under both
+    # `python` and `streamlit run`. This avoids any possibility of recursive
+    # process spawning that can keep port 8501 closed and trigger the health‑
+    # check failure you saw in Cloud.
 
     # ---------------- Configuration ----------------
     DISH_KEYWORDS: Dict[str, List[str]] = {
