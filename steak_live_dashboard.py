@@ -137,7 +137,7 @@ if not _missing:
     def fetch_interest_over_time(keys: Union[List[str], str], geo: str, tf: str):
         """Return weekly average Trends interest for *keys* list or single term."""
         kw_list: List[str] = keys if isinstance(keys, list) else [keys]
-        tr = TrendReq(hl="en-US", tz=0)
+                tr = TrendReq(hl="en-US", tz=0, requests_args={"timeout": (10, 25)})hl="en-US", tz=0)
         tr.build_payload(kw_list=kw_list, geo=geo, timeframe=tf)
         df = tr.interest_over_time()
         return df[kw_list].mean(axis=1) if not df.empty else pd.Series(dtype=float)
@@ -157,25 +157,34 @@ if not _missing:
         df["Rank"] = df["Mean"].rank(ascending=False, method="min")
         return df.sort_values("Rank")
 
-    def _launch_dashboard() -> None:
+        def _launch_dashboard() -> None:
+        """Render Streamlit UI. Heavy Google calls only on user demand."""
         st.set_page_config("European Steak Popularity Dashboard", layout="wide")
         st.title("European Steak Dish Popularity Dashboard")
         st.write(
-            "Tracks live Google Trends data for ten iconic beef‑steak dishes popular across Europe. "
-            "Select timeframe and region in the sidebar."
+            "Fetch and compare live Google Trends data for ten iconic beef‑steak dishes popular across Europe.
+"
+            "The first data pull can take ~30 s, so click the **Load data** button when you’re ready."
         )
 
+        # --- sidebar inputs ---
         timeframe = st.sidebar.selectbox(
             "Timeframe", ("today 12-m", "today 5-y", "2015-01-01 2025-05-08"), index=1
         )
         region = st.sidebar.text_input("Geo code (ISO‑2, e.g. EU, DE, CH, AT)", DEFAULT_GEO)
-
+        st.sidebar.caption("Data source: Google Trends via PyTrends (values 0‑100).")
         st.sidebar.markdown("---")
-        st.sidebar.caption("Data: Google Trends via PyTrends (0‑100).")
 
-        with st.spinner("Fetching Google Trends data …"):
-            df = collect_trends_data(DISH_KEYWORDS, region.upper(), timeframe)
+        # --- load button ---
+        if st.button("🔄  Load data / refresh", type="primary"):
+            with st.spinner("Fetching Google Trends data … this may take up to 30 s"):
+                df = collect_trends_data(DISH_KEYWORDS, region.upper(), timeframe)
+            _render_charts(df, timeframe, region)
+        else:
+            st.info("Click **Load data / refresh** to query Google Trends.")
 
+    # ---------------- internal helpers ----------------
+    def _render_charts(df, timeframe: str, region: str):
         st.subheader("Popularity Ranking (mean search interest)")
         st.dataframe(df[["Rank", "Mean", "Latest"]])
 
@@ -196,17 +205,8 @@ if not _missing:
         st.markdown("---")
         st.caption(f"© {datetime.now().year} European Steak Dashboard – Generated {datetime.now():%Y-%m-%d %H:%M}")
 
-else:
-
-    def _launch_dashboard() -> None:  # type: ignore
-        print(_install_message(_missing))
-        return
-
-# ---------------------------------------------------------------------------
-# Entrypoint
-# ---------------------------------------------------------------------------
-
 if __name__ == "__main__":
+    _launch_dashboard()
     _launch_dashboard()
 
 # ---------------------------------------------------------------------------
