@@ -99,16 +99,22 @@ if not _missing:
     import plotly.express as px  # type: ignore
     import streamlit as st  # type: ignore
 
-    # Detect if already inside Streamlit runtime
-    _inside_streamlit = bool(getattr(st, "_is_running_with_streamlit", lambda: False)())
+    # Detect if already inside Streamlit runtime or running under Streamlit Cloud
+    _inside_streamlit = (
+        bool(getattr(st, "_is_running_with_streamlit", lambda: False)())
+        or "STREAMLIT_SERVER_PORT" in os.environ  # set by Streamlit servers
+    )
 
-    # Auto‑relaunch when invoked with plain python
-    if not _inside_streamlit:
-        if shutil.which("streamlit"):
-            os.execvp("streamlit", ["streamlit", "run", str(_script_path())])
-        else:
-            print(_install_message(["streamlit"]))
-            sys.exit(0)
+    # Auto‑relaunch only when executed *locally* with plain `python` on POSIX
+    # systems. In Streamlit Cloud the script is already wrapped and relaunching
+    # would recurse, so we skip if the env‑var is present or on Windows.
+    if (not _inside_streamlit) and (os.name == "posix") and shutil.which("streamlit"):
+        os.execvp("streamlit", ["streamlit", "run", str(_script_path())])
+
+    # If Streamlit CLI is missing (rare in local minimal env) just print hint.
+    if not _inside_streamlit and not shutil.which("streamlit"):
+        print(_install_message(["streamlit"]))
+        sys.exit(0)
 
     # ---------------- Configuration ----------------
     DISH_KEYWORDS: Dict[str, List[str]] = {
