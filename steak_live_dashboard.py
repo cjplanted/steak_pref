@@ -56,8 +56,8 @@ def _script_name() -> str:
 REQUIRED_PACKAGES: Dict[str, str] = {
     "streamlit": "streamlit",
     "pandas": "pandas",
-    "pytrends.request": "pytrends",
-    "plotly.express": "plotly",
+    "pytrends": "pytrends",
+    "plotly": "plotly",
 }
 
 
@@ -109,9 +109,10 @@ if not _missing:
     if (not _inside_streamlit) and (os.name == "posix") and shutil.which("streamlit"):
         os.execvp("streamlit", ["streamlit", "run", str(_script_path())])
 
-    if not _inside_streamlit and not shutil.which("streamlit"):
-        print(_install_message(["streamlit"]))
-        sys.exit(0)
+        # If we somehow ended up here without Streamlit CLI (unlikely in Cloud),
+    # just continue – the UI can still render in-process. We no longer abort.
+    # This avoids "connection refused" errors in Cloud health‑check.
+    pass
 
     # ---------------- Configuration ----------------
     DISH_KEYWORDS: Dict[str, List[str]] = {
@@ -215,9 +216,11 @@ if __name__ == "__main__":
 def _test_helpers():
     assert _script_name()
     assert _try_import("sys") is sys
-    assert _try_import("pkg_does_not_exist_12345") is None
+    # Use a guaranteed-missing top-level name to avoid filesystem lookups.
+    assert _try_import("nonexistent_pkg_xyz___") is None
     msg = _install_message(["foo", "bar"])
     assert "pip install foo bar" in msg and "• foo" in msg and "• bar" in msg
 
-if __debug__:
+if __debug__ and not os.getenv("STREAMLIT_SERVER_PORT"):
+    _test_helpers()
     _test_helpers()
