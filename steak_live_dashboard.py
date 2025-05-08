@@ -1,17 +1,23 @@
-# Steak Live Dashboard – Google Trends Validation for Top European Steak Dishes
-# Author: ChatGPT
+# steak_live_dashboard.py  ─ European Steak Popularity (Google Trends)
 # =============================================================================
-# Streamlit dashboard that visualises Google Trends interest for ten beef‑steak
-# dishes. Runs both locally (`python …` or `streamlit run …`) **and** on
-# Streamlit Community Cloud. Compatible back to Python 3.7.
+# Streamlit dashboard: compares search interest for 10 iconic beef‑steak dishes
+# across Europe using the Google Trends API (PyTrends).
+# • Runs locally via  `streamlit run`  *or*  `python steak_live_dashboard.py`
+# • Runs on Streamlit Community Cloud without extra configuration
+# • Compatible with Python ≥ 3.7
 # =============================================================================
-"""
-Key behaviour
--------------
-* `streamlit run steak_live_dashboard.py` → dashboard starts immediately.
-* `python steak_live_dashboard.py` locally → identical behaviour (no relaunch logic).
-* In Streamlit Cloud the script runs once; port 8501 opens for health‑check.
-* Missing dependencies trigger a one‑page install hint, *exit 0*.
+"""Minimal usage
+$ pip install streamlit pandas pytrends plotly
+$ streamlit run steak_live_dashboard.py
+
+On Streamlit Cloud place this file and *requirements.txt* in your repo:
+    streamlit>=1.35
+    pandas
+    pytrends
+    plotly
+    requests
+
+The first data pull may take ~30 s because Google throttles anonymous queries.
 """
 
 from __future__ import annotations
@@ -19,28 +25,25 @@ from __future__ import annotations
 import os
 import sys
 import types
-from importlib import import_module, util as _import_util
 from datetime import datetime
+from importlib import import_module, util as import_util
 from pathlib import Path
 from textwrap import dedent
-from typing import List, Dict, Union
+from typing import List, Dict, Optional
 
-# ---------------------------------------------------------------------------
-# Helper – robust script path/name (never uses __file__)
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Utility – robust script path
+# -----------------------------------------------------------------------------
 
-def _script_path() -> Path:
-    return Path(sys.argv[0]).resolve() if sys.argv and sys.argv[0] else Path.cwd() / "steak_live_dashboard.py"
+SCRIPT_PATH: Path = Path(sys.argv[0]).resolve() if sys.argv and sys.argv[0] else Path.cwd() / "steak_live_dashboard.py"
+SCRIPT_NAME: str = SCRIPT_PATH.name
 
+# -----------------------------------------------------------------------------
+# Optional imports – decide at runtime whether to launch Streamlit UI or print
+# an install hint when dependencies are missing.
+# -----------------------------------------------------------------------------
 
-def _script_name() -> str:
-    return _script_path().name
-
-# ---------------------------------------------------------------------------
-# Dependency handling
-# ---------------------------------------------------------------------------
-
-REQUIRED_PACKAGES: Dict[str, str] = {
+REQUIRED_PKG: Dict[str, str] = {
     "streamlit": "streamlit",
     "pandas": "pandas",
     "pytrends": "pytrends",
@@ -48,105 +51,103 @@ REQUIRED_PACKAGES: Dict[str, str] = {
 }
 
 
-def _try_import(module_path: str) -> Union[types.ModuleType, None]:
+def _try_import(mod: str) -> Optional[types.ModuleType]:
+    """Import *mod* if found else return *None* without raising."""
     try:
-        return import_module(module_path) if _import_util.find_spec(module_path) else None
+        return import_module(mod) if import_util.find_spec(mod) else None
     except ImportError:
         return None
 
-_missing: List[str] = [pip for mod, pip in REQUIRED_PACKAGES.items() if _try_import(mod) is None]
+missing_pkgs: List[str] = [pip for mod, pip in REQUIRED_PKG.items() if _try_import(mod) is None]
 
-# ---------------------------------------------------------------------------
-# Install‑hint builder
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Pretty install hint (only printed in headless/no‑deps situations)
+# -----------------------------------------------------------------------------
 
-def _install_message(pkgs: List[str]) -> str:
+def _install_hint(pkgs: List[str]) -> str:
     bullets = "\n".join(f"  • {pkg}" for pkg in pkgs)
-    return dedent(f"""
-        🚨 Required Python packages are missing:
+    return dedent(
+        f"""
+        🚨 Missing Python packages:
         {bullets}
 
-        Install with:
+        Install them and rerun:
 
             pip install {' '.join(pkgs)}
 
-        Then launch the dashboard with either command:
+        Then start the dashboard with:
 
-            python {_script_name()}
-            streamlit run {_script_name()}
-    """)
+            streamlit run {SCRIPT_NAME}
+        """
+    )
 
-# ---------------------------------------------------------------------------
-# STREAMLIT SECTION (imports only if deps are present)
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Main Streamlit app – only defined/executed if dependencies are satisfied
+# -----------------------------------------------------------------------------
 
-if not _missing:
+if not missing_pkgs:
     import pandas as pd  # type: ignore
-    from pytrends.request import TrendReq  # type: ignore
     import plotly.express as px  # type: ignore
     import streamlit as st  # type: ignore
+    from pytrends.request import TrendReq  # type: ignore
 
-    # ---------------- Configuration ----------------
+    # ---------------------------- configuration -----------------------------
     DISH_KEYWORDS: Dict[str, List[str]] = {
         "Steak Frites": ["steak frites"],
         "Bistecca alla Fiorentina": ["bistecca alla fiorentina", "florentine steak"],
         "Steak Tartare": ["steak tartare"],
         "Beef Wellington": ["beef wellington"],
-        "Entrecote Cafe de Paris": ["entrecote cafe de paris", "steak cafe de paris"],
+        "Entrecôte Café de Paris": ["entrecote cafe de paris", "steak cafe de paris"],
         "Steak au Poivre": ["steak au poivre", "pepper steak"],
         "Tagliata di Manzo": ["tagliata di manzo", "tagliata steak"],
         "Zwiebelrostbraten": ["zwiebelrostbraten"],
-        "Chuleton / Txuleton": ["chuletón", "txuleton", "chuleton steak"],
-        "Churrasco Picanha": ["picanha", "churrasco picanha"],
+        "Txuleton (Chuleta)": ["chuletón", "txuleton", "chuleton steak"],
+        "Picanha (Churrasco)": ["picanha", "churrasco picanha"],
     }
 
     DEFAULT_TIMEFRAME = "today 5-y"
-    DEFAULT_GEO = "EU"
+    DEFAULT_GEO = "EU"  # Europe‑wide
 
-    # ---------------- Data helpers ----------------
-    @st.cache_data(show_spinner=False, ttl=3600)
-    def fetch_interest_over_time(keys: Union[List[str], str], geo: str, tf: str):
-        """Return weekly average Trends interest or empty series on network error."""
-        kw = keys if isinstance(keys, list) else [keys]
+    # ---------------------------- data helpers -----------------------------
+    @st.cache_data(ttl=3600, show_spinner=False)
+    def _fetch_trends(term_or_list: List[str] | str, geo: str, timeframe: str) -> pd.Series:
+        """Return weekly mean search interest for *term_or_list* or empty series."""
+        kw_list = term_or_list if isinstance(term_or_list, list) else [term_or_list]
         try:
             tr = TrendReq(
                 hl="en-US",
                 tz=0,
-                requests_args={"timeout": (10, 25)},
+                timeout=(10, 30),  # connect, read (sec)
                 retries=2,
-                backoff_factor=0.3,
+                backoff_factor=0.4,
             )
-            tr.build_payload(kw_list=kw, geo=geo, timeframe=tf)
+            tr.build_payload(kw_list=kw_list, geo=geo, timeframe=timeframe)
             df = tr.interest_over_time()
-            if df.empty:
-                st.warning(f"No Google Trends data returned for {', '.join(kw)}.")
-                return pd.Series(dtype=float)
-            return df[kw].mean(axis=1)
-        except Exception as err:  # noqa: BLE001
-            st.error(
-                f"Google Trends request for {', '.join(kw)} failed: {err}. "
-                "If this persists, reload later or run the app locally."
-            )
+            return df[kw_list].mean(axis=1) if not df.empty else pd.Series(dtype=float)
+        except Exception as exc:  # broad catch to keep dashboard alive
+            st.warning(f"Trend fetch failed for {', '.join(kw_list)} → {exc}")
             return pd.Series(dtype=float)
 
-    @st.cache_data(show_spinner=False, ttl=3600)
-    def collect_trends_data(map_: Dict[str, List[str]], geo: str, tf: str):
-        rows = []
-        for dish, kw in map_.items():
-            ser = fetch_interest_over_time(kw, geo, tf)
-            rows.append({
-                "Dish": dish,
-                "Mean": float(ser.mean()) if not ser.empty else 0.0,
-                "Latest": float(ser.iloc[-1]) if not ser.empty else 0.0,
-                "Series": ser,
-            })
+    @st.cache_data(ttl=3600, show_spinner=False)
+    def _collect_trends(geo: str, timeframe: str) -> pd.DataFrame:
+        rows: List[Dict[str, object]] = []
+        for dish, kw in DISH_KEYWORDS.items():
+            ser = _fetch_trends(kw, geo, timeframe)
+            rows.append(
+                {
+                    "Dish": dish,
+                    "Mean": float(ser.mean()) if not ser.empty else 0.0,
+                    "Latest": float(ser.iloc[-1]) if not ser.empty else 0.0,
+                    "Series": ser,
+                }
+            )
         df = pd.DataFrame(rows).set_index("Dish")
         df["Rank"] = df["Mean"].rank(ascending=False, method="min")
         return df.sort_values("Rank")
 
-    # ---------------- UI helpers ----------------
-    def _render_charts(df, timeframe: str, region: str):
-        st.subheader("Popularity Ranking (mean search interest)")
+    # ----------------------------- UI helpers ------------------------------
+    def _render_charts(df: pd.DataFrame, timeframe: str, region: str) -> None:
+        st.subheader("Popularity ranking (mean search interest)")
         st.dataframe(df[["Rank", "Mean", "Latest"]])
 
         st.plotly_chart(
@@ -154,65 +155,62 @@ if not _missing:
                 df.reset_index(),
                 x="Dish",
                 y="Mean",
-                title=f"Average Trends Interest ({timeframe} | {region.upper()})",
+                title=f"Average Trends Interest – {region.upper()} ({timeframe})",
                 height=420,
             ),
             use_container_width=True,
         )
 
-        st.subheader("Trend Evolution")
-        chosen = st.multiselect("Compare dishes", list(DISH_KEYWORDS), default=list(DISH_KEYWORDS)[:3])
-        if chosen:
-            combo = pd.concat({d: df.loc[d, "Series"] for d in chosen}, axis=1)
-            st.plotly_chart(px.line(combo, title="Google Trends Over Time"), use_container_width=True)
+        st.subheader("Trend evolution")
+        selected = st.multiselect("Compare dishes", list(DISH_KEYWORDS), default=list(DISH_KEYWORDS)[:3])
+        if selected:
+            combined = pd.concat({d: df.loc[d, "Series"] for d in selected}, axis=1)
+            st.plotly_chart(px.line(combined, title="Weekly Interest"), use_container_width=True)
             with st.expander("Raw weekly data"):
-                st.dataframe(combo)
+                st.dataframe(combined)
 
-        st.markdown("---")
-        st.caption(f"© {datetime.now().year} European Steak Dashboard – Generated {datetime.now():%Y-%m-%d %H:%M}")
+        st.caption(f"Updated {datetime.now():%Y‑%m‑%d %H:%M}")
 
-    def _launch_dashboard() -> None:
-        st.set_page_config("European Steak Popularity Dashboard", layout="wide")
-        st.title("European Steak Dish Popularity Dashboard")
-        st.write(
-            "Fetch and compare live Google Trends data for ten iconic beef‑steak dishes popular across Europe.\n"
-            "First data pull can take up to 30 s; click **Load data** when ready."
+    # ----------------------------- main app -------------------------------
+    def _main() -> None:
+        st.set_page_config("European Steak Popularity", layout="wide")
+        st.title("European Steak‑Dish Popularity Dashboard")
+        st.write("Live Google Trends comparison of ten signature beef‑steak dishes across Europe.")
+
+        timeframe = st.sidebar.selectbox(
+            "Timeframe", ("today 12-m", "today 5-y", "2015-01-01 2025-05-08"), index=1
         )
-
-        timeframe = st.sidebar.selectbox("Timeframe", ("today 12-m", "today 5-y", "2015-01-01 2025-05-08"), index=1)
-        region = st.sidebar.text_input("Geo code (ISO‑2, e.g. EU, DE, CH, AT)", DEFAULT_GEO)
-        st.sidebar.caption("Data: Google Trends via PyTrends (0‑100 scale).")
+        region = st.sidebar.text_input("Geo code (ISO‑2, e.g. EU, DE, CH)", DEFAULT_GEO)
         st.sidebar.markdown("---")
 
-        if st.button("🔄 Load data / refresh", type="primary"):
-            with st.spinner("Fetching Google Trends data… this may take up to 30 s"):
-                df = collect_trends_data(DISH_KEYWORDS, region.upper(), timeframe)
-            _render_charts(df, timeframe, region)
+        if st.button("🔄 Load / refresh data", type="primary"):
+            with st.spinner("Fetching Google Trends … this may take 15‑30 s"):
+                df_trends = _collect_trends(region.upper(), timeframe)
+            _render_charts(df_trends, timeframe, region)
         else:
-            st.info("Press **Load data / refresh** to query Google Trends.")
+            st.info("Click the button to query Google Trends.")
 
 else:
-    def _launch_dashboard() -> None:  # type: ignore
-        print(_install_message(_missing))
-        return
 
-# ---------------------------------------------------------------------------
-# Entrypoint
-# ---------------------------------------------------------------------------
+    def _main() -> None:  # type: ignore
+        print(_install_hint(missing_pkgs))
+
+# -----------------------------------------------------------------------------
+# Execute when run as script
+# -----------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    _launch_dashboard()
+    _main()
 
-# ---------------------------------------------------------------------------
-# Lightweight tests (safe without heavy deps)
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Lightweight self‑test (skipped on Streamlit Cloud)
+# -----------------------------------------------------------------------------
 
-def _test_helpers():
-    assert _script_name()
+def _self_test() -> None:
+    assert SCRIPT_NAME
     assert _try_import("sys") is sys
-    assert _try_import("pkg_does_not_exist_12345") is None
-    msg = _install_message(["foo", "bar"])
-    assert "pip install foo bar" in msg and "• foo" in msg and "• bar" in msg
+    assert _try_import("definitely_nonexistent_pkg_xyz") is None
+    assert "pip install foo bar" in _install_hint(["foo", "bar"])
 
 if __debug__ and not os.getenv("STREAMLIT_SERVER_PORT"):
-    _test_helpers()
+    _self_test()
