@@ -1,29 +1,17 @@
-# Steak Live Dashboard – Google Trends Validation for Top European Steak Dishes
-# Author: ChatGPT
+# Steak Live Dashboard – Google Trends Validation for Top European Steak Dishes
+# Author: ChatGPT
 # =============================================================================
 # Streamlit dashboard that visualises Google Trends interest for ten beef‑steak
-# dishes. Designed to run both locally (`python …` or `streamlit run …`) and on
-# Streamlit Community Cloud.  Works back to Python 3.7.
+# dishes. Runs both locally (`python …` or `streamlit run …`) **and** on
+# Streamlit Community Cloud. Compatible back to Python 3.7.
 # =============================================================================
 """
 Key behaviour
---------------
-* If all dependencies are present **and** the script is launched with
-  `streamlit run`, the dashboard starts immediately.
-* If launched with plain `python` on a local POSIX machine it relaunches itself
-  via the Streamlit CLI (unless already inside Streamlit or on Windows).
-* On Streamlit Cloud (`STREAMLIT_SERVER_PORT` env‑var) auto‑relaunch is skipped
-  to avoid recursion.
-* When dependencies are missing it prints a one‑page install hint and exits
-  with **status 0** (CI‑friendly).
-
-Latest fixes
-------------
-* Removed stray duplicate `hl="en‑US", tz=0` and indentation error in
-  `fetch_interest_over_time`.
-* Ensured `_launch_dashboard` and `_render_charts` are **top‑level** functions,
-  not nested (avoids unexpected indent issues).
-* Added timeouts to `TrendReq` to prevent hangs in Cloud.
+-------------
+* `streamlit run steak_live_dashboard.py` → dashboard starts immediately.
+* `python steak_live_dashboard.py` locally → identical behaviour (no relaunch logic).
+* In Streamlit Cloud the script runs once; port 8501 opens for health‑check.
+* Missing dependencies trigger a one‑page install hint, *exit 0*.
 """
 
 from __future__ import annotations
@@ -31,7 +19,6 @@ from __future__ import annotations
 import os
 import sys
 import types
-import shutil
 from importlib import import_module, util as _import_util
 from datetime import datetime
 from pathlib import Path
@@ -99,13 +86,6 @@ if not _missing:
     import plotly.express as px  # type: ignore
     import streamlit as st  # type: ignore
 
-    # Detect hosting context – we are inside Streamlit Cloud **or** a local
-    # Streamlit run if the private flag is set.  We no longer auto‑relaunch
-    # via `os.execvp`; instead the script runs identically under both
-    # `python` and `streamlit run`. This avoids any possibility of recursive
-    # process spawning that can keep port 8501 closed and trigger the health‑
-    # check failure you saw in Cloud.
-
     # ---------------- Configuration ----------------
     DISH_KEYWORDS: Dict[str, List[str]] = {
         "Steak Frites": ["steak frites"],
@@ -126,11 +106,28 @@ if not _missing:
     # ---------------- Data helpers ----------------
     @st.cache_data(show_spinner=False, ttl=3600)
     def fetch_interest_over_time(keys: Union[List[str], str], geo: str, tf: str):
+        """Return weekly average Trends interest or empty series on network error."""
         kw = keys if isinstance(keys, list) else [keys]
-        tr = TrendReq(hl="en-US", tz=0, requests_args={"timeout": (10, 25)})
-        tr.build_payload(kw_list=kw, geo=geo, timeframe=tf)
-        df = tr.interest_over_time()
-        return df[kw].mean(axis=1) if not df.empty else pd.Series(dtype=float)
+        try:
+            tr = TrendReq(
+                hl="en-US",
+                tz=0,
+                requests_args={"timeout": (10, 25)},
+                retries=2,
+                backoff_factor=0.3,
+            )
+            tr.build_payload(kw_list=kw, geo=geo, timeframe=tf)
+            df = tr.interest_over_time()
+            if df.empty:
+                st.warning(f"No Google Trends data returned for {', '.join(kw)}.")
+                return pd.Series(dtype=float)
+            return df[kw].mean(axis=1)
+        except Exception as err:  # noqa: BLE001
+            st.error(
+                f"Google Trends request for {', '.join(kw)} failed: {err}. "
+                "If this persists, reload later or run the app locally."
+            )
+            return pd.Series(dtype=float)
 
     @st.cache_data(show_spinner=False, ttl=3600)
     def collect_trends_data(map_: Dict[str, List[str]], geo: str, tf: str):
@@ -147,14 +144,19 @@ if not _missing:
         df["Rank"] = df["Mean"].rank(ascending=False, method="min")
         return df.sort_values("Rank")
 
-    # ---------------- UI functions ----------------
+    # ---------------- UI helpers ----------------
     def _render_charts(df, timeframe: str, region: str):
         st.subheader("Popularity Ranking (mean search interest)")
         st.dataframe(df[["Rank", "Mean", "Latest"]])
 
         st.plotly_chart(
-            px.bar(df.reset_index(), x="Dish", y="Mean",
-                   title=f"Average Trends Interest ({timeframe} | {region.upper()})"),
+            px.bar(
+                df.reset_index(),
+                x="Dish",
+                y="Mean",
+                title=f"Average Trends Interest ({timeframe} | {region.upper()})",
+                height=420,
+            ),
             use_container_width=True,
         )
 
@@ -174,7 +176,7 @@ if not _missing:
         st.title("European Steak Dish Popularity Dashboard")
         st.write(
             "Fetch and compare live Google Trends data for ten iconic beef‑steak dishes popular across Europe.\n"
-            "The first data pull can take up to 30 s; click **Load data** when ready."
+            "First data pull can take up to 30 s; click **Load data** when ready."
         )
 
         timeframe = st.sidebar.selectbox("Timeframe", ("today 12-m", "today 5-y", "2015-01-01 2025-05-08"), index=1)
@@ -208,11 +210,9 @@ if __name__ == "__main__":
 def _test_helpers():
     assert _script_name()
     assert _try_import("sys") is sys
-    # Use a guaranteed-missing top-level name to avoid filesystem lookups.
-    assert _try_import("nonexistent_pkg_xyz___") is None
+    assert _try_import("pkg_does_not_exist_12345") is None
     msg = _install_message(["foo", "bar"])
     assert "pip install foo bar" in msg and "• foo" in msg and "• bar" in msg
 
 if __debug__ and not os.getenv("STREAMLIT_SERVER_PORT"):
-    _test_helpers()
     _test_helpers()
