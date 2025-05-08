@@ -105,16 +105,43 @@ if not missing:
 
     # -------------------- data helpers --------------------
     @st.cache_data(ttl=3600, show_spinner=False)
+        @st.cache_data(ttl=3600, show_spinner=False)
     def fetch_trends(keywords: List[str] | str, geo: str, timeframe: str) -> pd.Series:
-        """Return weekly average Google Trends interest; retry once on failure."""
+        """Return weekly average Google Trends interest with a polite user‑agent.
+
+        Google blocks many cloud IP ranges if the request looks like a bot. We
+        set a common browser *User‑Agent* header and do a two‑step manual
+        retry. Still, Google may refuse (HTTP 400/429). In that case we return
+        an empty Series instead of crashing the dashboard.
+        """
         kw_list = keywords if isinstance(keywords, list) else [keywords]
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/123.0 Safari/537.36"
+            )
+        }
+
         for attempt in (1, 2):
             try:
-                tr = TrendReq(hl="en-US", tz=0, timeout=(10, 30))  # connect/read
+                tr = TrendReq(
+                    hl="en-US",
+                    tz=0,
+                    timeout=(10, 30),
+                    requests_args={"headers": headers},
+                )
                 tr.build_payload(kw_list=kw_list, geo=geo, timeframe=timeframe)
                 df = tr.interest_over_time()
                 if df.empty:
-                    return pd.Series(dtype=float)
+                    raise ValueError("empty dataframe")
+                return df[kw_list].mean(axis=1)
+            except Exception as exc:  # noqa: BLE001
+                if attempt == 2:
+                    st.warning(
+                        f"Trend fetch failed for {', '.join(kw_list)} → {exc}. "
+                        "Google may block repeated or anonymous requests. Try again later or run the app locally."
+                    )
+        return pd.Series(dtype=float)
                 return df[kw_list].mean(axis=1)
             except Exception as exc:  # pragma: no cover
                 if attempt == 2:
